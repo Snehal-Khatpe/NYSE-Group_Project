@@ -1,0 +1,584 @@
+---
+title: "Business Analytics with R Group Project"
+authors: Yukyung Cha, Ismael Isak, Snehal Khatpe, Tashfia Mamun, and Naomi Snider
+output:
+  html_document:
+    df_print: paged
+---
+Libraries
+```{r Libraries}
+#Load Libaries
+library(ggplot2)
+library(tidyr)
+library(leaps)
+library(glmnet)
+library(RColorBrewer)
+#install.packages("viridis")
+library("viridis") 
+library(neuralnet)
+library(rpart)
+library(caTools)
+library(rpart.plot)
+library(Amelia)
+library(ggthemes)
+library(corrplot)
+library(corrgram)
+require(quantmod)
+require(PerformanceAnalytics)
+require(xts)
+library(tidyverse)
+```
+ 
+```{r Load Data Sets}
+#Description of each company with division on sectors
+security <- read.csv('C:/Users/littl/Downloads/securities.csv')
+security
+ 
+#Prices is raw as-is daily prices which does not account for stock splits
+prices <- read.csv('C:/Users/littl/Downloads/prices.csv')
+prices
+ 
+#Split_prices is the same as the prices data, but has been adjusted for stock splits
+split_prices <- read.csv('C:/Users/littl/Downloads/prices-split-adjusted.csv')
+ 
+ 
+#converting dates
+split_prices$date <- as.Date(split_prices$date)
+#adding year to merge with fundamentals
+split_prices$year <- format(split_prices$date , '%Y')
+split_prices
+ 
+#Metrics from SEC 10K filings
+fundamentals <- read.csv('C:/Users/littl/Downloads/fundamentals.csv')
+#converting dates
+fundamentals$Period.Ending <- as.Date(fundamentals$Period.Ending)
+#adding year to merge with split prices
+fundamentals$year <- format(fundamentals$Period.Ending, '%Y')
+fundamentals
+```
+ 
+Data Cleaning
+```{r Data Cleaning}
+#Merging the data sets to include split prices and fundamentals by year and symbol with all items from split prices being included
+subset_selection <- merge(split_prices, fundamentals, by.x = c('symbol', 'year'), by.y = c('Ticker.Symbol','year'), all.x = TRUE)
+#removing any NA values
+subset_selection <- na.omit(subset_selection)
+subset_selection <- subset(subset_selection, select = c('symbol','year', 'date', 'open', 'close', 'low', 'high', 'volume', 'After.Tax.ROE', 'Deferred.Asset.Charges', 'Deferred.Liability.Charges', 'Inventory', 'Investments', 'Net.Income', 'Operating.Income', 'Operating.Margin', 'Pre.Tax.ROE', 'Profit.Margin', 'Quick.Ratio', 'Total.Assets', 'Total.Equity', 'Total.Liabilities', 'Total.Revenue', 'Earnings.Per.Share', 'Estimated.Shares.Outstanding'))
+ 
+subset_selection
+```
+ 
+```{r Descriptive Statistics}
+## Taking the security file and dropping all the columns except GICS.Sector and Ticker.Symbol
+symbol_sector <- security %>% select(Ticker.symbol, GICS.Sector)
+symbol_sector
+ 
+## Using left_join from dplyr to merge prices with symbol_sector based on stock symbol
+names(symbol_sector)[1] <- "symbol"
+new_prices <- left_join(split_prices, symbol_sector, by="symbol")
+new_prices
+ 
+#Mean opening price by industry for each year 
+# group by industry (mean opening price)
+tb <- new_prices %>%
+  group_by(GICS.Sector, year) %>% 
+  summarise(mean_open = mean(open))
+ 
+ggplot(tb, aes(x=year, y=mean_open, color = GICS.Sector)) + geom_point()
+ggplot(tb, aes(x=year, y=mean_open, color = GICS.Sector, group =1)) + geom_line()
+ggplot(tb, aes(x=GICS.Sector,y=mean_open, fill = year)) + geom_bar(position = "dodge",stat = "identity")
+tb
+ 
+# group by industry (mean closing price)
+tb1 <- new_prices %>%
+  group_by(GICS.Sector, year) %>% 
+  summarise(mean_close = mean(close))
+ 
+ggplot(tb1, aes(x=year, y=mean_close, color = GICS.Sector)) + geom_point()
+ggplot(tb1, aes(x=year, y=mean_close, color = GICS.Sector, group =1)) + geom_line()
+ggplot(tb1, aes(x=GICS.Sector,y=mean_close, fill = year)) + geom_bar(position = "dodge",stat = "identity")
+tb1
+ 
+#boxplot of closing price by industry per year
+ggplot(new_prices, aes(x=year, y=close)) + geom_boxplot() + facet_wrap(~ GICS.Sector)
+ 
+#highest closing prices by company in each industry
+tb3 <-new_prices %>%
+  group_by(year, GICS.Sector, symbol,) %>% 
+  summarise(mean_close = mean(close)) %>%
+  arrange(desc(mean_close)) %>%
+  slice(1:3)
+ 
+ggplot(tb3, aes(x=year, y=mean_close, fill=symbol)) + 
+  geom_bar(position = "dodge",stat = "identity") +facet_wrap(~ GICS.Sector) 
+tb3
+ 
+#We can see that top3 has remained pretty consistent across each industry
+#Security – maybe a histogram of the industries 
+table(security$GICS.Sector)
+ggplot(security,aes(GICS.Sector)) + geom_bar() 
+ 
+```
+ 
+ 
+```{r Data Visualization}
+#Data Visualization
+missmap(prices, main="Prices Check", 
+        col=c("yellow", "black"), legend=FALSE)
+ 
+#security
+missmap(security, main="Security Check", 
+        col=c("yellow", "black"), legend=FALSE)
+ 
+#split_prices
+missmap(split_prices, main="split_prices Check", 
+        col=c("yellow", "black"), legend=FALSE)
+ 
+#Stock price per industry
+symbol_sector <- security %>% select(Ticker.symbol, GICS.Sector)
+prices$date <- as.Date(prices$date, "%Y-%m-%d")
+names(symbol_sector)[1] <- "symbol"
+new_prices <- left_join(prices, symbol_sector, by="symbol")
+new_prices <- na.omit(new_prices)
+ 
+plot1 <- ggplot(new_prices, aes(x=date, y=close, color=GICS.Sector)) + 
+        geom_line() + theme_bw() + 
+        scale_color_viridis(discrete = TRUE, option = "D") +
+        scale_fill_viridis(discrete = TRUE, option = "D") +
+        scale_x_date(breaks = '1 year')
+plot1
+ 
+#Stock price per subindustry
+names(security)
+unique(security$GICS.Sub.Industry)
+symbol_sector <- security %>% select(Ticker.symbol, GICS.Sub.Industry)
+prices$date <- as.Date(prices$date, "%Y-%m-%d")
+names(symbol_sector)[1] <- "symbol"
+new_prices <- left_join(prices, symbol_sector, by="symbol")
+new_prices <- na.omit(new_prices)
+ 
+plot2 <- ggplot(new_prices, aes(x=date, y=close, color=GICS.Sub.Industry)) + 
+  geom_line() + theme_bw() + 
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D") +
+  scale_x_date(breaks = '1 year')
+plot2
+ 
+# Relationship between close & After.Tax.ROE
+names(subset_selection)
+subset_selection$date <- as.Date(subset_selection$date, "%Y-%m-%d")
+ 
+symbol_sector <- security %>% select(Ticker.symbol, GICS.Sector)
+names(symbol_sector)[1] <- "symbol"
+ 
+new_subset_selection <- left_join(subset_selection, symbol_sector, by="symbol")
+new_subset_selection$date <- as.Date(new_subset_selection$date, "%Y-%m-%d")
+ 
+plot3 <- ggplot(new_subset_selection, aes(x=After.Tax.ROE, y=close, color=GICS.Sector)) + 
+  geom_point() +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D")
+plot3
+ 
+#Zoom In
+plot4 <- ggplot(new_subset_selection, aes(x=After.Tax.ROE, y=close, color=GICS.Sector)) + 
+  geom_point() + scale_x_continuous(limits = c(0, 500)) +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D")
+plot4
+ 
+# Relationship between close & Investments
+summary(new_subset_selection$Investments)
+ 
+plot5 <- ggplot(new_subset_selection, aes(x=Investments, y=close, color=GICS.Sector)) + 
+  geom_point() +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D")
+plot5
+ 
+#Stock price per industry
+symbol_sector <- security %>% select(Ticker.symbol, GICS.Sector)
+prices$date <- as.Date(prices$date, "%Y-%m-%d")
+names(symbol_sector)[1] <- "symbol"
+new_prices <- left_join(prices, symbol_sector, by="symbol")
+new_prices <- na.omit(new_prices)
+ 
+# Flow of difference per industry
+new_subset_selection$date <- as.Date(new_subset_selection$date, "%Y-%m-%d")
+plot6 <- ggplot(new_subset_selection, aes(close, fill = GICS.Sector)) + 
+  geom_histogram(position="dodge") +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D")
+plot6
+ 
+plot7 <- ggplot(new_subset_selection, aes(close, fill = GICS.Sector)) + 
+  geom_boxplot()+ 
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D")
+plot7
+ 
+plot8 <- ggplot(new_subset_selection, aes(x=GICS.Sector, y=close, color = GICS.Sector)) + 
+  geom_point() +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D")
+plot8
+ 
+```
+ 
+```{r Preparing the Data}
+# ----FORWARD STEPWISE----
+fwd_fit <- regsubsets(close~., subset_selection, nvmax = 20, method="forward")
+fwd_summ <- summary(fwd_fit)
+fwd_summ
+ 
+# using the adj R squared to check goodness of fit
+fwd_summ$adjr2
+which.max(fwd_summ$adjr2)
+ 
+#getting the coefficients
+coef(fwd_fit, 15)
+ 
+ 
+#----BACKWARD STEPWISE----
+back_fit <- regsubsets(close~., subset_selection, nvmax = 20, method="backward")
+back_summ <- summary(back_fit)
+back_summ
+ 
+### get the adjusted R squared
+back_summ$adjr2
+which.max(back_summ$adjr2)
+coef(back_fit, 15)
+ 
+```
+ 
+ 
+
+```{r Evaluation Algorithms}
+#----RIDGE REGRESSION----
+subset_selection_2 <-  subset(subset_selection, select = c('open', 'close', 'low', 'high', 'volume'))
+x <- model.matrix(close~., subset_selection_2)[,-1]  # matrix of the predictors values
+y <- subset_selection_2$close  # vector of the dependent variable values
+w <- seq(10, -3, length=100)
+lvalues <- 10 ^ w
+lvalues
+
+#Fit the ridge regression model
+ridge_fit <- glmnet(x, y, alpha = 0, lambda = lvalues)
+ridge_fit$lambda
+
+#Lambda for the model
+ridge_fit$lambda[40]
+best_lambda <- ridge_fit$lambda.min
+
+#Coefficient for the model
+coef(ridge_fit)[,40]
+predict(ridge_fit, s = 1200, type = "coefficients")
+
+#Improved lambda
+best_ridge_fit <- glmnet(x, y, alpha = 0, lambda = best_lambda)
+best_ridge_fit$lambda
+coef(best_ridge_fit)
+
+#prediction from improved model
+y_predicted <- predict(best_ridge_fit, s=best_lambda, newx = x)
+ 
+
+#find SST and SSE
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_predicted - y)^2)
+sse
+
+#find R-Squared
+rsq <- 1 - sse/sst
+rsq
+
+rsq
+
+plot(ridge_fit)
+plot(ridge_fit, xvar = "lambda")
+
+
+#Mean Squared Error
+mse <- sse/(324240-3)
+mse
+
+#----LASSO REGRESSION----
+#define response variable
+y <- subset_selection$close
+#define matrix of predictor variables
+x <- data.matrix(subset_selection[, c('open', 'close', 'low', 'high', 'volume')])
+
+
+#perform k-fold cross-validation to find optimal lambda value
+cv_model <- cv.glmnet(x, y, alpha = 1)
+
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.min
+best_lambda
+
+#find coefficients of best model
+best_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+coef(best_model)
+y_predicted <- predict(best_model, s = best_lambda, newx = x)
+#find SST and SSE
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_predicted - y)^2)
+sse
+#find R-Squared
+rsq <- 1 - sse/sst
+rsq
+#find MSE
+lasso_MSE <- sse/(324240-3)
+lasso_MSE
+
+plot(cv_model)
+
+
+
+#----DECISION TREE----
+head(prices)
+### create the training set and the test set 
+
+i <- sample(342240, 162120)
+SE_train <- subset_selection_2[i, 1:5]
+SE_test <- subset_selection_2[-i, 1:5] 
+
+### grow the regression tree with the rpart() function
+### the method parameter must be set to "anova" 
+
+### the rpart() function has built-in cross validation
+### it performs a 10-fold cross-validation
+fit <- rpart(close~., data = SE_train, method = "anova") 
+
+### plot the tree with the prp() function
+prp(fit) 
+
+### plot the tree with the rpart.plot() function
+rpart.plot(fit) 
+
+### print the complexity parameter table
+printcp(fit) 
+
+
+### compute the goodness-of-fit in the TEST set
+pred1 <- predict(fit, SE_test)
+mse <- sum((pred1 - SE_test$close)^2)/162120
+mse 
+
+var.y <- sum((SE_test$close - mean(SE_test$close))^2)/162119 
+
+rsq <- 1 - mse/var.y
+rsq
+ 
+#----NEURAL NETWORK----
+##Neural Network to predict stock prices
+ 
+#splitting the data
+split_nn = sample.split(subset_selection_2$close, SplitRatio = 0.70)
+ 
+train_nn = subset(subset_selection_2, split_nn == TRUE)
+test_nn = subset(subset_selection_2, split_nn == FALSE)
+ 
+#Training the Model to predict closing price
+ 
+ 
+nn <- neuralnet(close ~ open + low + high + volume
+                ,data=train_nn,hidden=2,linear.output=TRUE)
+ 
+#neuralnet visualization
+plot(nn)
+ 
+# Compute Predictions off Test Set
+predicted.nn.values <- neuralnet::compute(nn,test_nn[c('open','low','high','volume')])
+ 
+# Check the Mean Squared Error
+MSE.nn <- sum((test_nn$close - predicted.nn.values$net.result)^2)/nrow(test_nn)
+MSE.nn
+ 
+#find SST and SSE
+sst_nn <- sum((test_nn$close - mean(test_nn$close))^2)
+sse_nn <- sum((predicted.nn.values$net.result - test_nn$close)^2)
+#find R-Squared
+rsq_nn <- 1 - (sse_nn/sst_nn)
+rsq_nn
+ 
+ 
+ 
+#----LINEAR REGRESSION----
+df3 <-subset_selection_2
+df3 <- as.data.frame(df3)
+ 
+head(df3)
+num.cols3 <- sapply(df3, is.numeric)
+cor.data3 <- cor(df3[,num.cols3])
+cor.data3
+#Corrplot
+corrplot(cor.data3, method='color')
+#Corrgram
+corrgram(df3, order=TRUE, lower.panel=panel.shade,
+         upper.panel=panel.pie, text.panel=panel.txt)
+#Histogram
+ggplot(df3,aes(x=close)) + geom_histogram(bins=20,alpha=0.5,fill='blue') + theme_minimal()
+ 
+set.seed(101)
+sample3 <- sample.split(df3$close, SplitRatio = 0.70)
+
+train3 = subset(df3, sample3 == TRUE)
+test3 = subset(df3, sample3 == FALSE)
+ 
+model3 <- lm(close ~ open + low + high + volume , train3)
+summary(model3)
+
+lr_predictions <- predict(model3,test3)
+
+results <- as.data.frame(cbind(lr_predictions, test3$close))
+colnames(results) <- c('pred', 'real')
+
+SSE = sum((results$pred - results$real)^2)
+SST = sum( (mean(split_prices$close) - results$real)^2)
+
+R2 = 1 - SSE/SST
+R2
+
+mse <- mean((results$real-results$pred)^2)
+mse
+
+#Visualize
+res3 <- residuals(model3)
+res3 <- as.data.frame(res3)
+head(res3)
+ 
+#Histogram of residuals
+ggplot(res3, aes(res3)) + geom_histogram(fill='blue', alpha=0.5)
+
+#Scatterplot of residuals
+plot(fitted(model3), resid(model3), xlab="Fitted values", ylab="Residuals", col="black", pch = 16)
+abline(0,0)
+ 
+# Result Visualization
+# Creating data frame for visualization (model vs real)
+
+
+
+# Setting x value as index(similar to the length of each column) since it's impossible to bring back the date values after mixing up and sampling the data into train&test set
+results_ggp <- data.frame(x = 1:92072,
+                          y = c(results$pred, results$real),
+                          group = c(rep("pred", nrow(results)),
+                                    rep("real", nrow(results))))
+
+
+
+
+
+result_viz <- ggplot(results_ggp, aes(x, y, col = group)) +
+  geom_line() + xlab("Index") + ylab("Stock Price") +
+  ggtitle("Comparison: Model Predictions vs Real Value") +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE, option = "D")
+result_viz
+ 0
+ 
+#Save model for later use
+saveRDS(model3, file = "nyse_linear_regression_model.rda")
+ 
+# loading the model
+previous_model = readRDS("nyse_linear_regression_model.rda")
+
+```
+
+
+
+Best performing stock analysis:
+First I'm going to create separate groups based on ticker symbol.
+
+```{r}
+individual_stocks <- split_prices %>% group_by(symbol) %>% nest()
+```
+
+Then I'm going to change the data type for each stock in to a Time Series format that we can use.
+
+```{r}
+for(i in 1:501){
+  individual_stocks[[2]][[i]] <- xts(individual_stocks[[2]][[i]][,2:6], order.by=as.Date(individual_stocks[[2]][[i]][,1]$date))
+}
+```
+
+
+## Finding best performing stocks
+
+The criterea for best performing stocks would be the last closing price minus the first opening price divided by the last closing price.
+
+$$
+\frac{Last.Price-First.Price}{Last.Price}
+$$
+
+```{r}
+ROI <- matrix(NA,nrow = 501, ncol = 1)
+stock <- matrix(NA,nrow = 501, ncol = 1)
+```
+```{r}
+for(i in 1:501){
+
+  stock[i] <- individual_stocks[[1]][[i]]
+}
+```
+```{r}
+for(i in 1:501){
+ROI[i] <- (as.numeric(last(individual_stocks[[2]][[i]][,2]))-as.numeric(first(individual_stocks[[2]][[i]][,1]))/as.numeric(last(individual_stocks[[2]][[i]][,2])))
+}
+```
+```{r}
+Price_change <- cbind(stock, ROI)
+
+Price_change[order(Price_change[,2], decreasing = TRUE),][1:10,]
+```
+
+## Simple Trading strategy
+
+Using those 10 best performing stocks we can perform a simple trading strategy where we buy at the open and sell at the close. Our trading signal would be then be whether the price increased by 5% since the last closing, this is so we can maximize our earning and avoid downturns in the market.
+
+```{r}
+NFLX <- individual_stocks %>% filter(symbol=="NFLX")
+
+
+
+price <- Cl(NFLX$data[[1]]) # close price
+r <- price/Lag(price) - 1 # % price change
+delta <-0.005 #threshold
+signal <-c(0) # first date has no signal
+
+#Loop over all trading days (except the first)
+for (i in 2: length(price)){
+  if (r[i] > delta){
+    signal[i]<- 1
+  } else
+    signal[i]<- 0
+
+}
+signal<-reclass(signal,price)
+
+
+trade <- Lag(signal,1)
+ret<-dailyReturn(NFLX$data[[1]])*trade
+names(ret)<-"filter"
+```
+
+
+This chart shows us the performance of $1 based on the strategy of only trading only if the price increases by 5% from the previous closing.
+
+```{r}
+chart.CumReturns(ret, main="Simple Strategy", wealth.index = TRUE)
+```
+
+This would compare to no strategy in this chart.
+
+```{r}
+chartSeries(NFLX[[2]][[1]],
+            show.grid = FALSE,
+            TA = NULL,
+            name = "NFLX",
+            type = 'line',
+            theme=chartTheme('white'))
+```
+
+This basically tells us that having even a basic strategy when investing yields better results than without because not all stocks perform as well as NFLX.
